@@ -1,17 +1,17 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import psycopg2, json
 from psycopg2.extras import RealDictCursor
 import os
 
 app = FastAPI()
 
-# Mount static files (CSS, JS)
+# Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Allow frontend access (from browser)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,10 +20,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Database connection string
+# NeonDB connection
 DB_URL = "postgresql://neondb_owner:npg_O0LrfcY7oGZN@ep-silent-rain-a19bkdss-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
 
-# Function to get database connection
 def get_db_connection():
     try:
         conn = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
@@ -32,44 +31,39 @@ def get_db_connection():
         print(f"❌ Database connection error: {e}")
         raise HTTPException(500, f"Database connection failed: {str(e)}")
 
-# Serve HTML pages
+# --- Safe FileResponse helper ---
+def safe_file_response(path: str):
+    try:
+        if os.path.exists(path):
+            return FileResponse(path)
+        else:
+            print(f"❌ File not found: {path}")
+            return JSONResponse(status_code=404, content={"error": "File not found", "path": path})
+    except Exception as e:
+        print(f"❌ Error serving file {path}: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+# Routes
 @app.get("/")
-def home():
-    return FileResponse('templates/home.html')
-
+def home(): return safe_file_response("templates/home.html")
 @app.get("/index.html")
-def index():
-    return FileResponse('templates/index.html')
-
+def index(): return safe_file_response("templates/index.html")
 @app.get("/register.html")
-def register_page():
-    return FileResponse('templates/register.html')
-
+def register_page(): return safe_file_response("templates/register.html")
 @app.get("/order.html")
-def order_page():
-    return FileResponse('templates/order.html')
-
+def order_page(): return safe_file_response("templates/order.html")
 @app.get("/orders.html")
-def orders_page():
-    return FileResponse('templates/orders.html')
-
+def orders_page(): return safe_file_response("templates/orders.html")
 @app.get("/profile.html")
-def profile_page():
-    return FileResponse('templates/profile.html')
-
+def profile_page(): return safe_file_response("templates/profile.html")
 @app.get("/admin.html")
-def admin_page():
-    return FileResponse('templates/admin.html')
-
+def admin_page(): return safe_file_response("templates/admin.html")
 @app.get("/adminmenu.html")
-def adminmenu_page():
-    return FileResponse('templates/adminmenu.html')
-
+def adminmenu_page(): return safe_file_response("templates/adminmenu.html")
 @app.get("/home.html")
-def home_page():
-    return FileResponse('templates/home.html')
+def home_page(): return safe_file_response("templates/home.html")
 
-# Health check endpoint
+# Health check
 @app.get("/health")
 def health_check():
     try:
@@ -79,23 +73,29 @@ def health_check():
         conn.close()
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
+        print(f"❌ Health check failed: {e}")
         return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
 
-# --- Register User ---
+# --- Test endpoint ---
+@app.get("/ping")
+def ping():
+    return {"ok": True, "message": "Server works"}
+
+# --- Register user ---
 @app.post("/register")
 def register(data: dict):
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT 1 FROM users WHERE email=%s", (data["email"],))
+        cur.execute("SELECT 1 FROM users WHERE email=%s", (data.get("email"),))
         if cur.fetchone():
             raise HTTPException(400, "Email already registered")
-        cur.execute("INSERT INTO users(name,email,password,role) VALUES(%s,%s,%s,'user')",
-                    (data["name"], data["email"], data["password"]))
+        cur.execute(
+            "INSERT INTO users(name,email,password,role) VALUES(%s,%s,%s,'user')",
+            (data.get("name"), data.get("email"), data.get("password"))
+        )
         conn.commit()
         return {"ok": True, "message": "User registered successfully"}
-    except HTTPException:
-        raise
     except Exception as e:
         print(f"❌ Registration error: {e}")
         raise HTTPException(500, f"Registration failed: {str(e)}")
@@ -108,21 +108,21 @@ def login(data: dict):
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM users WHERE email=%s AND password=%s",
-                    (data["email"], data["password"]))
+        cur.execute(
+            "SELECT * FROM users WHERE email=%s AND password=%s",
+            (data.get("email"), data.get("password"))
+        )
         user = cur.fetchone()
         if not user:
             raise HTTPException(400, "Invalid credentials")
-        return user  # includes "role"
-    except HTTPException:
-        raise
+        return user
     except Exception as e:
         print(f"❌ Login error: {e}")
         raise HTTPException(500, f"Login failed: {str(e)}")
     finally:
         conn.close()
 
-# --- Place Order ---
+# --- Place order ---
 @app.post("/orders")
 def place_order(data: dict):
     conn = get_db_connection()
@@ -132,8 +132,10 @@ def place_order(data: dict):
             INSERT INTO orders(user_id,fullname,contact,location,items,total)
             VALUES (%s,%s,%s,%s,%s,%s)
             RETURNING *;
-        """, (data["user_id"], data["fullname"], data["contact"],
-              data["location"], json.dumps(data["items"]), data["total"]))
+        """, (
+            data.get("user_id"), data.get("fullname"), data.get("contact"),
+            data.get("location"), json.dumps(data.get("items")), data.get("total")
+        ))
         conn.commit()
         return {"ok": True, "message": "Order placed successfully"}
     except Exception as e:
@@ -142,79 +144,32 @@ def place_order(data: dict):
     finally:
         conn.close()
 
-# --- Admin: View Orders ---
+# --- Admin: Get orders ---
 @app.get("/orders")
 def get_orders():
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute("SELECT * FROM orders ORDER BY id DESC")
-        result = cur.fetchall()
-        return result
+        return cur.fetchall()
     except Exception as e:
         print(f"❌ Get orders error: {e}")
         raise HTTPException(500, f"Failed to get orders: {str(e)}")
     finally:
         conn.close()
 
-# --- Admin: Update Order Status ---
+# --- Admin: Update order status ---
 @app.put("/orders/{oid}")
 def update_order(oid: int, data: dict):
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute("UPDATE orders SET status=%s WHERE id=%s RETURNING *",
-                    (data["status"], oid))
+                    (data.get("status"), oid))
         conn.commit()
-        result = cur.fetchone()
-        return result
+        return cur.fetchone()
     except Exception as e:
         print(f"❌ Update order error: {e}")
         raise HTTPException(500, f"Failed to update order: {str(e)}")
     finally:
         conn.close()
-
-@app.on_event("startup")
-async def startup_event():
-    print("=" * 60)
-    print("🚀 RMLCanteen Server Starting...")
-    print("=" * 60)
-    print("📡 Testing database connection...")
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Test 1: Check if users table exists
-        print("📋 Checking tables...")
-        cur.execute("SELECT COUNT(*) as count FROM users")
-        user_count = cur.fetchone()
-        print(f"✅ Users table exists! Found {user_count['count']} users.")
-        
-        # Test 2: Check if orders table exists
-        cur.execute("SELECT COUNT(*) as count FROM orders")
-        order_count = cur.fetchone()
-        print(f"✅ Orders table exists! Found {order_count['count']} orders.")
-        
-        # Test 3: Show some users (without passwords)
-        cur.execute("SELECT id, name, email, role FROM users LIMIT 3")
-        users = cur.fetchall()
-        if users:
-            print("\n👥 Sample users:")
-            for user in users:
-                print(f"   - {user['name']} ({user['email']}) - Role: {user['role']}")
-        
-        conn.close()
-        print("\n" + "=" * 60)
-        print("✅ DATABASE IS WORKING PERFECTLY!")
-        print("=" * 60)
-    except Exception as e:
-        print(f"❌ Database connection failed: {e}")
-        print("⚠️  Server will start but database features won't work!")
-        print("\n💡 Possible solutions:")
-        print("   1. Check your internet connection")
-        print("   2. Verify NeonDB database is active")
-        print("   3. Check if connection string is correct")
-        print("=" * 60)
-    print("\n🌐 Server: http://localhost:8000")
-    print("📄 Docs: http://localhost:8000/docs")
-    print("=" * 60)
